@@ -1,0 +1,184 @@
+// Kernel function to update the cells
+#pragma kernel UpdateCells
+// The buffer containing the cells
+RWStructuredBuffer<int> cells;
+RWStructuredBuffer<int> newCells;
+
+// The dimensions of the grid
+int gridsize;
+int growing;
+int vn;
+int states;
+int height;
+int roofType; // 3 is big, 4 is small
+
+int GetCellIndex(int x, int y, int z)
+{
+    return x + y * gridsize + z * gridsize * gridsize;
+}
+
+[numthreads(10, 10, 10)] // This specifies the number of threads in each group
+    void
+    UpdateCells(uint3 id
+                : SV_DispatchThreadID, uint groupIndex
+                : SV_GroupIndex)
+{
+    // Convert the 3D thread ID to a 1D index
+    int index = GetCellIndex(id.x, id.y, id.z);
+    int indexAbove = GetCellIndex(id.x, id.y + 1, id.z);
+
+    // Count the number of live neighbors
+    int numLiveNeighbors = 0;
+    int aboveNeighbors = 0;
+    int belowNeighbors = 0;
+    int directBelow = 0;
+    int directAbove = 0;
+    int numSideNeighbors = 0;
+    int squish = 0;
+
+
+    if(id.y == 0){
+        belowNeighbors = 9;
+        directBelow = -1;
+    }
+
+    if(id.y > 0 && cells[GetCellIndex(id.x, id.y - 1, id.z)] % 10 > 0){
+        directBelow = 1;
+    }
+
+    if(id.y < gridsize && cells[GetCellIndex(id.x, id.y + 1, id.z)] % 10 > 0){
+        directAbove = 1;
+    }
+
+    if(vn == 1){
+        if(cells[GetCellIndex(id.x + 1, id.y, id.z)] > 0){
+            numLiveNeighbors++;
+        }
+        if(cells[GetCellIndex(id.x - 1, id.y, id.z)] > 0){
+            numLiveNeighbors++;
+        }
+        if(cells[GetCellIndex(id.x, id.y + 1, id.z)] > 0 && id.y < gridsize-1){
+            numLiveNeighbors++;
+            aboveNeighbors++;
+        }
+        if(cells[GetCellIndex(id.x, id.y - 1, id.z)] > 0 && id.y > 0){
+            numLiveNeighbors++;
+        }
+        if(cells[GetCellIndex(id.x, id.y, id.z + 1)] > 0){
+            numLiveNeighbors++;
+        }
+        if(cells[GetCellIndex(id.x, id.y, id.z - 1)] > 0){
+            numLiveNeighbors++;
+        }
+    }
+    else {
+        for (int z = -1; z <= 1; z++)
+        {
+            for (int y = -1; y <= 1; y++)
+            {
+                for (int x = -1; x <= 1; x++)
+                {
+                    if (x == 0 && y == 0 && z == 0)
+                    {
+                        continue;
+                    }
+
+                    int nx = id.x + x;
+                    int ny = id.y + y;
+                    int nz = id.z + z;
+
+                    // Check if the neighbor is within the bounds of the grid
+                    if (nx >= 0 && nx < gridsize && ny >= 0 && ny < gridsize && nz >= 0 && nz < gridsize)
+                    {
+                        int neighborIndex = GetCellIndex(nx, ny, nz);
+                        if(cells[neighborIndex] % 10 > 0){
+                            numLiveNeighbors++;
+                        }
+
+                        if(y == 0){
+                            if(cells[neighborIndex] % 10 > 0){
+                                numSideNeighbors++;
+                            }
+                        }
+
+                        if(y == -1){
+                            if(cells[neighborIndex] % 10 > 0){
+                                belowNeighbors++;
+                            }
+                        }
+
+                        if(cells[GetCellIndex(id.x, id.y + 1, id.z)] % 10 > 0 && cells[GetCellIndex(id.x, id.y - 1, id.z)] % 10 > 0){
+                            squish = 1;
+                        }
+                        if(cells[GetCellIndex(id.x, id.y, id.z+1)] % 10 > 0 && cells[GetCellIndex(id.x, id.y, id.z-1)] % 10 > 0){
+                            squish = 1;
+                        }
+                        if(cells[GetCellIndex(id.x+1, id.y, id.z)] % 10 > 0 && cells[GetCellIndex(id.x-1, id.y, id.z)] % 10 > 0){
+                            squish = 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+
+    if(growing == 1){ //growing
+        if(id.y < height){
+            if (cells[index] % 10 > 0) // if alive
+            {
+                if (directBelow == 0 && numSideNeighbors < 2)
+                {
+                    newCells[index]--;
+                }
+                if(directBelow == -1){
+                    newCells[index] = states;
+                }
+            }
+            else if (cells[index] % 10 == 0) // if dead
+            {
+                if (directBelow == 1 || numLiveNeighbors > 10 || numSideNeighbors > 3 || squish == 1)
+                {
+                    newCells[index] = states;
+                }
+            }
+        }
+    } else if(growing == 0){ // decaying
+        if (newCells[index] % 10 > 0) // if alive
+        {
+            if (directBelow == 0)
+            {
+                newCells[index]--;
+            }
+
+            if (numLiveNeighbors < 2)
+            {
+                newCells[index]--;
+            }
+
+            if(numSideNeighbors > 7 && directAbove == 1){
+                newCells[index]--;
+            }
+
+            if(newCells[index]% 10 == 5 && newCells[indexAbove] % 10 < 3){
+                newCells[index]--;
+            }
+        }
+    } else if (growing == 2){ // grow roof
+        if(id.y >= height){
+            if(newCells[index] % 10 == 0){ // if dead
+                if(numSideNeighbors >= roofType && directBelow == 0){
+                    newCells[index] = states + 10;
+                }
+                if(belowNeighbors >= 6 && id.y <= height + 10){
+                    newCells[index] = states + 10;
+                }
+            }
+            if(newCells[index] % 10 > 0){ // if alive
+                if(directBelow == 0 && numSideNeighbors < 3){
+                    newCells[index] = 0;
+                }
+            }
+        }
+    } 
+}
